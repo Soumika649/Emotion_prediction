@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Emotion Classifier</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --text: #e7e9ee;
+    --muted: #9aa0ac;
+    --accent: #6c8cff;
+    --border: #2a2e38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at top, #1a1d26, var(--bg));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 560px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  textarea {
+    width: 100%;
+    min-height: 100px;
+    resize: vertical;
+    background: #10131a;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    padding: 12px 14px;
+    font-size: 15px;
+    font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button {
+    margin-top: 14px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .result {
+    margin-top: 24px;
+    display: none;
+  }
+  .headline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  .emoji { font-size: 32px; }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 48px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .bar-track {
+    background: #10131a;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+  }
+  .error {
+    margin-top: 16px;
+    color: #ff6b6b;
+    font-size: 14px;
+    display: none;
+  }
+  .status {
+    margin-top: 20px;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Emotion Classifier</h1>
+    <p class="sub">Type a sentence and the BiGRU model will predict its emotion.</p>
+
+    <textarea id="text-input" placeholder="e.g. I can't believe how happy I am right now!"></textarea>
+    <button id="predict-btn">Predict Emotion</button>
+
+    <div class="error" id="error"></div>
+
+    <div class="result" id="result">
+      <div class="headline">
+        <span class="emoji" id="result-emoji"></span>
+        <span id="result-label"></span>
+      </div>
+      <div id="bars"></div>
+    </div>
+
+    <div class="status" id="status">checking server…</div>
+  </div>
+
+<script>
+  const EMOJIS = { sadness: "😢", joy: "😄", love: "❤️", anger: "😠", fear: "😨", surprise: "😲" };
+
+  const textInput = document.getElementById("text-input");
+  const btn = document.getElementById("predict-btn");
+  const resultEl = document.getElementById("result");
+  const errorEl = document.getElementById("error");
+  const barsEl = document.getElementById("bars");
+  const statusEl = document.getElementById("status");
+
+  async function checkHealth() {
+    try {
+      const res = await fetch("/health");
+      const data = await res.json();
+      statusEl.textContent = data.model_loaded ? "model ready" : "model loading…";
+    } catch {
+      statusEl.textContent = "server unreachable";
+    }
+  }
+  checkHealth();
+
+  async function predict() {
+    const text = textInput.value.trim();
+    if (!text) return;
+
+    btn.disabled = true;
+    btn.textContent = "Predicting…";
+    errorEl.style.display = "none";
+    resultEl.style.display = "none";
+
+    try {
+      const res = await fetch("/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Request failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      renderResult(data);
+    } catch (e) {
+      errorEl.textContent = e.message || "Something went wrong.";
+      errorEl.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Predict Emotion";
+    }
+  }
+
+  function renderResult(data) {
+    document.getElementById("result-emoji").textContent = EMOJIS[data.predicted_emotion] || "🤔";
+    document.getElementById("result-label").textContent =
+      `${capitalize(data.predicted_emotion)} (${Math.round(data.confidence * 100)}%)`;
+
+    const probs = data.all_probabilites || {};
+    const sorted = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+
+    barsEl.innerHTML = sorted.map(([label, p]) => `
+      <div class="bar-row">
+        <span>${capitalize(label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(p * 100).toFixed(1)}%"></div></div>
+        <span>${Math.round(p * 100)}%</span>
+      </div>
+    `).join("");
+
+    resultEl.style.display = "block";
+  }
+
+  function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  btn.addEventListener("click", predict);
+  textInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) predict();
+  });
+</script>
+</body>
+</html>
